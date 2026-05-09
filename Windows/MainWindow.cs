@@ -249,13 +249,13 @@ public sealed class MainWindow : Window
         sets = ApplySort(sets).ToList();
 
         var visibleSets = configuration.HideCompletedSets
-            ? sets.Where(set => GetPiecesForActiveFilter(set).Any(piece => !snapshot.Items.ContainsKey(piece.ItemId))).ToList()
+            ? sets.Where(set => !IsSetCompleteInCollectionStorage(snapshot, GetPiecesForActiveFilter(set))).ToList()
             : sets;
 
         var completeCount = sets.Count(set =>
         {
             var pieces = GetPiecesForActiveFilter(set);
-            return pieces.Count > 0 && pieces.All(piece => snapshot.Items.ContainsKey(piece.ItemId));
+            return IsSetCompleteInCollectionStorage(snapshot, pieces);
         });
         ImGui.TextUnformatted($"{completeCount}/{sets.Count} visible sets complete");
 
@@ -281,8 +281,8 @@ public sealed class MainWindow : Window
     private void DrawSetRow(CharacterCollectionSnapshot snapshot, ItemSetDefinition set)
     {
         var filteredPieces = GetPiecesForActiveFilter(set);
-        var ownedPieces = filteredPieces.Where(piece => snapshot.Items.ContainsKey(piece.ItemId)).ToList();
-        var missingPieces = filteredPieces.Where(piece => !snapshot.Items.ContainsKey(piece.ItemId)).ToList();
+        var ownedPieces = filteredPieces.Where(piece => IsPieceInCollectionStorage(snapshot, piece.ItemId)).ToList();
+        var missingPieces = filteredPieces.Where(piece => !IsPieceInCollectionStorage(snapshot, piece.ItemId)).ToList();
         var complete = missingPieces.Count == 0;
 
         ImGui.TableNextRow();
@@ -363,6 +363,15 @@ public sealed class MainWindow : Window
             ImGui.EndTooltip();
         }
     }
+
+    private static bool IsSetCompleteInCollectionStorage(CharacterCollectionSnapshot snapshot, IReadOnlyCollection<ItemSetPiece> pieces)
+        => pieces.Count > 0 && pieces.All(piece => IsPieceInCollectionStorage(snapshot, piece.ItemId));
+
+    private static bool IsPieceInCollectionStorage(CharacterCollectionSnapshot snapshot, uint itemId)
+        => snapshot.Items.TryGetValue(itemId, out var ownership)
+            && (ownership.CountsBySource.ContainsKey(ItemCollectionSource.GlamourDresser)
+                || ownership.CountsBySource.ContainsKey(ItemCollectionSource.GlamourDresserSet)
+                || ownership.CountsBySource.ContainsKey(ItemCollectionSource.Armoire));
 
     private bool MatchesFilter(ItemSetDefinition set)
         => GetPiecesForActiveFilter(set).Count > 0;

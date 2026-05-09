@@ -3,8 +3,8 @@ using System.Collections.Generic;
 using System.Linq;
 using Dalamud.Plugin.Services;
 using FFXIVClientStructs.FFXIV.Client.Game;
-using FFXIVClientStructs.FFXIV.Client.Game.UI;
 using FFXIVClientStructs.FFXIV.Client.System.Framework;
+using FFXIVClientStructs.FFXIV.Client.UI.Misc;
 using Lumina.Excel.Sheets;
 using CabinetSheet = Lumina.Excel.Sheets.Cabinet;
 
@@ -13,21 +13,28 @@ namespace AkuItemSets.Services;
 public sealed class ItemCollectionScanner
 {
     private const uint HqFlag = 1_000_000;
-    private static readonly TimeSpan AutoScanInterval = TimeSpan.FromSeconds(20);
+    private static readonly TimeSpan AutoScanInterval = TimeSpan.FromMinutes(2);
+    private static readonly TimeSpan StorageOpenScanInterval = TimeSpan.FromSeconds(1);
+    private static readonly TimeSpan InventoryToDresserTransferGrace = TimeSpan.FromMinutes(2);
     private readonly Configuration configuration;
     private readonly IClientState clientState;
     private readonly IPlayerState playerState;
     private readonly IDataManager dataManager;
+    private readonly IGameGui gameGui;
     private readonly IPluginLog log;
     private readonly ItemSetRepository itemSetRepository;
+    private readonly Dictionary<ItemCollectionCategory, bool> storageWasVisible = new();
+    private readonly Dictionary<ItemCollectionCategory, DateTimeOffset> lastStorageOpenScanUtc = new();
+    private readonly Dictionary<uint, DateTimeOffset> inventoryTransferGraceUntil = new();
     private DateTimeOffset nextAutoScanUtc;
 
-    public ItemCollectionScanner(Configuration configuration, IClientState clientState, IPlayerState playerState, IDataManager dataManager, IPluginLog log, ItemSetRepository itemSetRepository)
+    public ItemCollectionScanner(Configuration configuration, IClientState clientState, IPlayerState playerState, IDataManager dataManager, IGameGui gameGui, IPluginLog log, ItemSetRepository itemSetRepository)
     {
         this.configuration = configuration;
         this.clientState = clientState;
         this.playerState = playerState;
         this.dataManager = dataManager;
+        this.gameGui = gameGui;
         this.log = log;
         this.itemSetRepository = itemSetRepository;
     }
@@ -45,13 +52,18 @@ public sealed class ItemCollectionScanner
 
     public void AutoScanIfDue()
     {
-        if (!clientState.IsLoggedIn || DateTimeOffset.UtcNow < nextAutoScanUtc)
+        if (!clientState.IsLoggedIn)
         {
             return;
         }
 
-        nextAutoScanUtc = DateTimeOffset.UtcNow + AutoScanInterval;
-        ScanCurrentCharacter();
+        ScanOpenedStorages();
+
+        if (DateTimeOffset.UtcNow >= nextAutoScanUtc)
+        {
+            var snapshot = ScanCurrentCharacter();
+            nextAutoScanUtc = DateTimeOffset.UtcNow + (snapshot == null ? TimeSpan.FromSeconds(5) : AutoScanInterval);
+        }
     }
 
     public unsafe CharacterCollectionSnapshot? ScanCurrentCharacter()
@@ -76,7 +88,7 @@ public sealed class ItemCollectionScanner
         var inventoryManager = InventoryManager.Instance();
         if (inventoryManager != null)
         {
-            scannedAnyCategory |= ScanContainerCategory(inventoryManager, snapshot, ItemCollectionCategory.Inventory, ItemCollectionSource.Inventory, InventoryTypes.Inventory, scanStartedUtc);
+            scannedAnyCategory |= ScanInventory(inventoryManager, snapshot, scanStartedUtc);
             scannedAnyCategory |= ScanContainerCategory(inventoryManager, snapshot, ItemCollectionCategory.Armoury, ItemCollectionSource.Armoury, InventoryTypes.Armoury, scanStartedUtc);
             scannedAnyCategory |= ScanContainerCategory(inventoryManager, snapshot, ItemCollectionCategory.Saddlebag, ItemCollectionSource.Saddlebag, InventoryTypes.Saddlebag, scanStartedUtc);
             scannedAnyCategory |= ScanRetainers(inventoryManager, snapshot, scanStartedUtc);
@@ -103,6 +115,34 @@ public sealed class ItemCollectionScanner
         }
 
         return $"{playerState.HomeWorld.RowId}:{playerState.CharacterName}";
+    }
+
+    private unsafe bool ScanInventory(InventoryManager* manager, CharacterCollectionSnapshot snapshot, DateTimeOffset scanStartedUtc)
+    {
+        var collectedItems = CollectContainerItems(manager, InventoryTypes.Inventory);
+        if (collectedItems.Count == 0)
+        {
+            return false;
+        }
+
+        var previousInventoryItems = snapshot.Items
+            .Where(entry => entry.Value.CountsBySource.ContainsKey(ItemCollectionSource.Inventory))
+            .Select(entry => entry.Key)
+            .ToHashSet();
+        var removedInventoryItems = previousInventoryItems.Except(collectedItems.Keys).ToList();
+        if (removedInventoryItems.Count > 0 && IsStorageCategoryVisible(ItemCollectionCategory.GlamourDresser))
+        {
+            foreach (var itemId in removedInventoryItems)
+            {
+                inventoryTransferGraceUntil[itemId] = scanStartedUtc + InventoryToDresserTransferGrace;
+            }
+        }
+
+        RemoveSources(snapshot, ItemCollectionSource.Inventory);
+        AddCollectedItems(snapshot, collectedItems, ItemCollectionSource.Inventory);
+        AddInventoryTransferGraceItems(snapshot, scanStartedUtc);
+        MarkCategoryScanned(snapshot, ItemCollectionCategory.Inventory, scanStartedUtc);
+        return true;
     }
 
     private unsafe bool ScanContainerCategory(InventoryManager* manager, CharacterCollectionSnapshot snapshot, ItemCollectionCategory category, ItemCollectionSource source, IReadOnlyList<InventoryType> inventoryTypes, DateTimeOffset scanStartedUtc)
@@ -172,10 +212,7 @@ public sealed class ItemCollectionScanner
                 return false;
             }
 
-            var framework = Framework.Instance();
-            var uiModule = framework == null ? null : framework->GetUIModule();
-            var itemFinderModule = uiModule == null ? null : uiModule->GetItemFinderModule();
-            if (itemFinderModule == null)
+            if (!TryGetItemFinderModule(out var itemFinderModule))
             {
                 return false;
             }
@@ -184,7 +221,7 @@ public sealed class ItemCollectionScanner
             var collectedSetItems = new Dictionary<uint, int>();
             var setByItemId = itemSetRepository.GetSets().ToDictionary(set => set.SetItemId);
             var itemIndex = 0u;
-            foreach (var itemId in manager->PrismBoxItemIds)
+            foreach (var itemId in itemFinderModule->GlamourDresserItemIds)
             {
                 var normalizedItemId = NormalizeItemId(itemId);
                 if (normalizedItemId == 0)
@@ -198,7 +235,7 @@ public sealed class ItemCollectionScanner
                     var unlockBits = itemFinderModule->GlamourDresserItemSetUnlockBits[(int)itemIndex];
                     foreach (var piece in set.Pieces)
                     {
-                        if (IsSetPieceUnlocked(unlockBits, piece.Slot))
+                        if (IsSetPieceStoredInDresserSet(unlockBits, piece.Slot))
                         {
                             collectedSetItems.TryGetValue(piece.ItemId, out var existing);
                             collectedSetItems[piece.ItemId] = existing + 1;
@@ -222,6 +259,7 @@ public sealed class ItemCollectionScanner
             RemoveSources(snapshot, ItemCollectionSource.GlamourDresser, ItemCollectionSource.GlamourDresserSet);
             AddCollectedItems(snapshot, collectedSingleItems, ItemCollectionSource.GlamourDresser);
             AddCollectedItems(snapshot, collectedSetItems, ItemCollectionSource.GlamourDresserSet);
+            ClearResolvedInventoryTransferGrace(snapshot);
 
             MarkCategoryScanned(snapshot, ItemCollectionCategory.GlamourDresser, scanStartedUtc);
             return true;
@@ -237,9 +275,7 @@ public sealed class ItemCollectionScanner
     {
         try
         {
-            var uiState = UIState.Instance();
-            var cabinet = uiState == null ? null : &uiState->Cabinet;
-            if (cabinet == null || !cabinet->IsCabinetLoaded())
+            if (!TryGetItemFinderModule(out var itemFinderModule))
             {
                 return false;
             }
@@ -247,7 +283,7 @@ public sealed class ItemCollectionScanner
             var collectedItems = new Dictionary<uint, int>();
             foreach (var cabinetRow in dataManager.GetExcelSheet<CabinetSheet>())
             {
-                if (cabinetRow.Item.RowId != 0 && cabinet->IsItemInCabinet(cabinetRow.RowId))
+                if (cabinetRow.Item.RowId != 0 && itemFinderModule->CabinetItemUnlockBits[(int)cabinetRow.RowId] != 0)
                 {
                     collectedItems.TryGetValue(cabinetRow.Item.RowId, out var existing);
                     collectedItems[cabinetRow.Item.RowId] = existing + 1;
@@ -269,6 +305,15 @@ public sealed class ItemCollectionScanner
             log.Warning(ex, "Could not scan armoire. Open the armoire once in game if it is not cached.");
             return false;
         }
+    }
+
+    private static unsafe bool TryGetItemFinderModule(out ItemFinderModule* itemFinderModule)
+    {
+        itemFinderModule = null;
+        var framework = Framework.Instance();
+        var uiModule = framework == null ? null : framework->GetUIModule();
+        itemFinderModule = uiModule == null ? null : uiModule->GetItemFinderModule();
+        return itemFinderModule != null;
     }
 
     private static void AddItem(CharacterCollectionSnapshot snapshot, uint itemId, ItemCollectionSource source, int count = 1)
@@ -294,8 +339,8 @@ public sealed class ItemCollectionScanner
     private static uint NormalizeItemId(uint itemId)
         => itemId > HqFlag ? itemId - HqFlag : itemId;
 
-    private static bool IsSetPieceUnlocked(ushort unlockBits, ItemSetSlot slot)
-        => (unlockBits & (1 << GetSetPieceBitIndex(slot))) != 0;
+    private static bool IsSetPieceStoredInDresserSet(ushort unlockBits, ItemSetSlot slot)
+        => (unlockBits & (1 << GetSetPieceBitIndex(slot))) == 0;
 
     private static int GetSetPieceBitIndex(ItemSetSlot slot)
         => slot switch
@@ -356,6 +401,118 @@ public sealed class ItemCollectionScanner
             snapshot.Items.Remove(itemId);
         }
     }
+
+    private void AddInventoryTransferGraceItems(CharacterCollectionSnapshot snapshot, DateTimeOffset now)
+    {
+        var expiredItemIds = inventoryTransferGraceUntil
+            .Where(entry => entry.Value <= now)
+            .Select(entry => entry.Key)
+            .ToList();
+
+        foreach (var itemId in expiredItemIds)
+        {
+            inventoryTransferGraceUntil.Remove(itemId);
+        }
+
+        if (!IsStorageCategoryVisible(ItemCollectionCategory.GlamourDresser))
+        {
+            return;
+        }
+
+        foreach (var itemId in inventoryTransferGraceUntil.Keys)
+        {
+            if (!snapshot.Items.TryGetValue(itemId, out var ownership)
+                || (!ownership.CountsBySource.ContainsKey(ItemCollectionSource.GlamourDresser)
+                    && !ownership.CountsBySource.ContainsKey(ItemCollectionSource.GlamourDresserSet)))
+            {
+                AddItem(snapshot, itemId, ItemCollectionSource.Inventory);
+            }
+        }
+    }
+
+    private void ClearResolvedInventoryTransferGrace(CharacterCollectionSnapshot snapshot)
+    {
+        var resolvedItemIds = inventoryTransferGraceUntil.Keys
+            .Where(itemId => snapshot.Items.TryGetValue(itemId, out var ownership)
+                && (ownership.CountsBySource.ContainsKey(ItemCollectionSource.GlamourDresser)
+                    || ownership.CountsBySource.ContainsKey(ItemCollectionSource.GlamourDresserSet)))
+            .ToList();
+
+        foreach (var itemId in resolvedItemIds)
+        {
+            inventoryTransferGraceUntil.Remove(itemId);
+        }
+    }
+
+    private void ScanOpenedStorages()
+    {
+        var now = DateTimeOffset.UtcNow;
+        var shouldScan = false;
+
+        foreach (var (category, addonNames) in StorageAddonNames)
+        {
+            var isVisible = IsStorageCategoryVisible(category);
+            storageWasVisible.TryGetValue(category, out var wasVisible);
+            lastStorageOpenScanUtc.TryGetValue(category, out var lastScan);
+
+            if (isVisible && (!wasVisible || now - lastScan >= StorageOpenScanInterval))
+            {
+                lastStorageOpenScanUtc[category] = now;
+                shouldScan = true;
+            }
+
+            storageWasVisible[category] = isVisible;
+        }
+
+        if (shouldScan)
+        {
+            ScanCurrentCharacter();
+        }
+    }
+
+    private bool IsAddonVisible(string addonName)
+    {
+        var addon = gameGui.GetAddonByName(addonName, 1);
+        return !addon.IsNull && addon.IsVisible;
+    }
+
+    private bool IsStorageCategoryVisible(ItemCollectionCategory category)
+        => StorageAddonNames.TryGetValue(category, out var addonNames) && addonNames.Any(IsAddonVisible);
+
+    private static readonly IReadOnlyDictionary<ItemCollectionCategory, string[]> StorageAddonNames = new Dictionary<ItemCollectionCategory, string[]>
+    {
+        [ItemCollectionCategory.Inventory] =
+        [
+            "Inventory",
+            "InventoryLarge",
+            "InventoryExpansion",
+            "InventoryGrid",
+        ],
+        [ItemCollectionCategory.Saddlebag] =
+        [
+            "InventoryBuddy",
+        ],
+        [ItemCollectionCategory.Retainers] =
+        [
+            "RetainerList",
+            "InventoryRetainer",
+            "InventoryRetainerLarge",
+            "RetainerItemTransferList",
+            "RetainerSell",
+        ],
+        [ItemCollectionCategory.GlamourDresser] =
+        [
+            "MiragePrismPrismBox",
+            "MiragePrismPrismBoxCrystallize",
+            "MiragePrismPrismSetConvert",
+            "MiragePrismPrismItemDetail",
+            "MiragePrismPrismSetPreview",
+        ],
+        [ItemCollectionCategory.Armoire] =
+        [
+            "CabinetWithdraw",
+        ],
+    };
 
     private static class InventoryTypes
     {

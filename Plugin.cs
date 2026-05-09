@@ -19,6 +19,7 @@ public sealed class Plugin : IDalamudPlugin
     [PluginService] internal static IPlayerState PlayerState { get; private set; } = null!;
     [PluginService] internal static IDataManager DataManager { get; private set; } = null!;
     [PluginService] internal static ITextureProvider TextureProvider { get; private set; } = null!;
+    [PluginService] internal static IGameGui GameGui { get; private set; } = null!;
     [PluginService] internal static IPluginLog Log { get; private set; } = null!;
 
     private readonly WindowSystem windowSystem = new("AkuItemSets");
@@ -34,7 +35,7 @@ public sealed class Plugin : IDalamudPlugin
         this.framework = framework;
         Configuration = PluginInterface.GetPluginConfig() as Configuration ?? new Configuration();
         ItemSetRepository = new ItemSetRepository(DataManager);
-        Scanner = new ItemCollectionScanner(Configuration, ClientState, PlayerState, DataManager, Log, ItemSetRepository);
+        Scanner = new ItemCollectionScanner(Configuration, ClientState, PlayerState, DataManager, GameGui, Log, ItemSetRepository);
         mainWindow = new MainWindow(Configuration, ItemSetRepository, Scanner, PlayerState, DataManager, TextureProvider);
 
         windowSystem.AddWindow(mainWindow);

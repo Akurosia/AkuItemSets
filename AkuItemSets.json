@@ -4,10 +4,7 @@
   "Punchline": "Track glamour item set collections per character.",
   "Description": "Scans inventory, armoury chest, saddlebag, retainers, glamour dresser, and armoire to show item set collection progress with job filters.",
   "ApplicableVersion": "any",
-  "IconUrl": "https://raw.githubusercontent.com/Akurosia/AkuItemSets/main/AkuItemSet.png",
-  "ImageUrls": [
-    "https://raw.githubusercontent.com/Akurosia/AkuItemSets/main/AkuItemSet.png"
-  ],
+  "IconUrl": "https://raw.githubusercontent.com/Akurosia/AkuItemSets/refs/heads/main/AkuItemSet.png",
   "Tags": [
     "items",
     "collection",

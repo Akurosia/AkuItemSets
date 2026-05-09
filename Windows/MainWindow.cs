@@ -281,9 +281,10 @@ public sealed class MainWindow : Window
     private void DrawSetRow(CharacterCollectionSnapshot snapshot, ItemSetDefinition set)
     {
         var filteredPieces = GetPiecesForActiveFilter(set);
-        var ownedPieces = filteredPieces.Where(piece => IsPieceInCollectionStorage(snapshot, piece.ItemId)).ToList();
-        var missingPieces = filteredPieces.Where(piece => !IsPieceInCollectionStorage(snapshot, piece.ItemId)).ToList();
-        var complete = missingPieces.Count == 0;
+        var collectedPieces = filteredPieces.Where(piece => IsPieceInCollectionStorage(snapshot, piece.ItemId)).ToList();
+        var ownedPieces = filteredPieces.Where(piece => snapshot.Items.ContainsKey(piece.ItemId)).ToList();
+        var missingPieces = filteredPieces.Where(piece => !snapshot.Items.ContainsKey(piece.ItemId)).ToList();
+        var complete = IsSetCompleteInCollectionStorage(snapshot, filteredPieces);
 
         ImGui.TableNextRow();
         ImGui.TableNextColumn();
@@ -299,8 +300,8 @@ public sealed class MainWindow : Window
         ImGui.TextDisabled($"#{set.SetItemId}");
 
         ImGui.TableNextColumn();
-        ImGui.TextUnformatted($"{ownedPieces.Count}/{filteredPieces.Count}");
-        var fraction = filteredPieces.Count == 0 ? 0 : (float)ownedPieces.Count / filteredPieces.Count;
+        ImGui.TextUnformatted($"{collectedPieces.Count}/{filteredPieces.Count}");
+        var fraction = filteredPieces.Count == 0 ? 0 : (float)collectedPieces.Count / filteredPieces.Count;
         ImGui.ProgressBar(fraction, new Vector2(-1, 0), complete ? "Done" : string.Empty);
 
         ImGui.TableNextColumn();

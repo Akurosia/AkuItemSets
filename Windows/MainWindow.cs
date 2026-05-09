@@ -20,6 +20,7 @@ public sealed class MainWindow : Window
     private readonly IPlayerState playerState;
     private readonly IDataManager dataManager;
     private readonly ITextureProvider textureProvider;
+    private readonly Localization localization;
     private HashSet<uint>? armoireItemIds;
 
     public MainWindow(
@@ -28,7 +29,8 @@ public sealed class MainWindow : Window
         ItemCollectionScanner scanner,
         IPlayerState playerState,
         IDataManager dataManager,
-        ITextureProvider textureProvider)
+        ITextureProvider textureProvider,
+        Localization localization)
         : base("AkuItemSets##aku_item_sets")
     {
         this.configuration = configuration;
@@ -37,6 +39,7 @@ public sealed class MainWindow : Window
         this.playerState = playerState;
         this.dataManager = dataManager;
         this.textureProvider = textureProvider;
+        this.localization = localization;
 
         SizeConstraints = new WindowSizeConstraints
         {
@@ -50,13 +53,13 @@ public sealed class MainWindow : Window
         var snapshot = scanner.CurrentSnapshot;
         if (snapshot == null)
         {
-            ImGui.TextUnformatted("Log in with a character, then scan to build this character's collection.");
+            ImGui.TextUnformatted(localization["status.login"]);
             return;
         }
 
         ImGui.TextUnformatted($"{snapshot.CharacterName} @ {snapshot.WorldName}");
         ImGui.SameLine();
-        ImGui.TextDisabled($"Last scan: {snapshot.LastScanUtc.LocalDateTime:g}");
+        ImGui.TextDisabled($"{localization["status.lastScan"]}: {snapshot.LastScanUtc.LocalDateTime:g}");
         ImGui.Separator();
 
         using var tabs = ImRaii.TabBar("aku_item_sets_tabs");
@@ -65,7 +68,7 @@ public sealed class MainWindow : Window
             return;
         }
 
-        using (var tab = ImRaii.TabItem("Collection"))
+        using (var tab = ImRaii.TabItem(localization["tab.collection"]))
         {
             if (tab.Success)
             {
@@ -74,11 +77,19 @@ public sealed class MainWindow : Window
             }
         }
 
-        using (var tab = ImRaii.TabItem("Scan status"))
+        using (var tab = ImRaii.TabItem(localization["tab.scanStatus"]))
         {
             if (tab.Success)
             {
-                DrawScanStatus(snapshot);
+                DrawScanStatus(snapshot, localization);
+            }
+        }
+
+        using (var tab = ImRaii.TabItem(localization["tab.armoireCandidates"]))
+        {
+            if (tab.Success)
+            {
+                DrawArmoireCandidates(snapshot);
             }
         }
     }
@@ -87,7 +98,7 @@ public sealed class MainWindow : Window
     {
         ImGui.SetNextItemWidth(220);
         var search = configuration.SearchText;
-        if (ImGui.InputTextWithHint("##search", "Search set or item", ref search, 128))
+        if (ImGui.InputTextWithHint("##search", localization["toolbar.searchHint"], ref search, 128))
         {
             configuration.SearchText = search;
             configuration.Save();
@@ -164,7 +175,7 @@ public sealed class MainWindow : Window
 
         ImGui.SameLine();
         var hideCompleted = configuration.HideCompletedSets;
-        if (ImGui.Checkbox("Hide complete", ref hideCompleted))
+        if (ImGui.Checkbox(localization["toolbar.hideComplete"], ref hideCompleted))
         {
             configuration.HideCompletedSets = hideCompleted;
             configuration.Save();
@@ -172,7 +183,7 @@ public sealed class MainWindow : Window
 
         ImGui.SameLine();
         var showOnlyMissing = configuration.ShowOnlyMissingPieces;
-        if (ImGui.Checkbox("Only missing pieces", ref showOnlyMissing))
+        if (ImGui.Checkbox(localization["toolbar.onlyMissing"], ref showOnlyMissing))
         {
             configuration.ShowOnlyMissingPieces = showOnlyMissing;
             configuration.Save();
@@ -180,17 +191,17 @@ public sealed class MainWindow : Window
 
         ImGui.SameLine();
         var includeAllClass = configuration.IncludeAllClassItemsInRoleFilters;
-        if (ImGui.Checkbox("Include all-class", ref includeAllClass))
+        if (ImGui.Checkbox(localization["toolbar.includeAllClass"], ref includeAllClass))
         {
             configuration.IncludeAllClassItemsInRoleFilters = includeAllClass;
             configuration.Save();
         }
     }
 
-    private static void DrawScanStatus(CharacterCollectionSnapshot snapshot)
+    private static void DrawScanStatus(CharacterCollectionSnapshot snapshot, Localization localization)
     {
-        ImGui.TextUnformatted("Automatic scans run while you are logged in.");
-        ImGui.TextDisabled("Categories that depend on game caches update after the game has loaded that storage.");
+        ImGui.TextUnformatted(localization["status.autoScan"]);
+        ImGui.TextDisabled(localization["status.cacheHint"]);
         ImGui.Spacing();
 
         using var table = ImRaii.Table("scan_status_table", 2, ImGuiTableFlags.Borders | ImGuiTableFlags.RowBg | ImGuiTableFlags.Resizable);
@@ -200,14 +211,14 @@ public sealed class MainWindow : Window
         }
 
         ImGui.TableSetupColumn("Category", ImGuiTableColumnFlags.WidthFixed, 180);
-        ImGui.TableSetupColumn("Last scanned", ImGuiTableColumnFlags.WidthStretch);
+        ImGui.TableSetupColumn(localization["status.lastScan"], ImGuiTableColumnFlags.WidthStretch);
         ImGui.TableHeadersRow();
 
         foreach (var category in Enum.GetValues<ItemCollectionCategory>())
         {
             ImGui.TableNextRow();
             ImGui.TableNextColumn();
-            ImGui.TextUnformatted(GetCategoryLabel(category));
+            ImGui.TextUnformatted(GetCategoryLabel(category, localization));
             ImGui.TableNextColumn();
             if (snapshot.LastScanByCategory.TryGetValue(category, out var lastScan))
             {
@@ -215,7 +226,7 @@ public sealed class MainWindow : Window
             }
             else
             {
-                ImGui.TextDisabled("Not scanned yet");
+                ImGui.TextDisabled(localization["status.notScanned"]);
             }
 
             if (category == ItemCollectionCategory.Retainers)
@@ -265,16 +276,70 @@ public sealed class MainWindow : Window
             return;
         }
 
-        ImGui.TableSetupColumn("Set", ImGuiTableColumnFlags.WidthStretch, 2.0f);
-        ImGui.TableSetupColumn("Progress", ImGuiTableColumnFlags.WidthFixed, 90);
-        ImGui.TableSetupColumn("Missing", ImGuiTableColumnFlags.WidthStretch, 1.5f);
-        ImGui.TableSetupColumn("Owned", ImGuiTableColumnFlags.WidthStretch, 1.5f);
-        ImGui.TableSetupColumn("Use", ImGuiTableColumnFlags.WidthFixed, 140);
+        ImGui.TableSetupColumn(localization["table.set"], ImGuiTableColumnFlags.WidthStretch, 2.0f);
+        ImGui.TableSetupColumn(localization["table.progress"], ImGuiTableColumnFlags.WidthFixed, 90);
+        ImGui.TableSetupColumn(localization["table.missing"], ImGuiTableColumnFlags.WidthStretch, 1.5f);
+        ImGui.TableSetupColumn(localization["table.owned"], ImGuiTableColumnFlags.WidthStretch, 1.5f);
+        ImGui.TableSetupColumn(localization["table.use"], ImGuiTableColumnFlags.WidthFixed, 140);
         ImGui.TableHeadersRow();
 
         foreach (var set in visibleSets)
         {
             DrawSetRow(snapshot, set);
+        }
+    }
+
+    private void DrawArmoireCandidates(CharacterCollectionSnapshot snapshot)
+    {
+        var candidates = snapshot.Items.Values
+            .Where(ownership => GetArmoireItemIds().Contains(ownership.ItemId))
+            .Where(ownership => !ownership.CountsBySource.ContainsKey(ItemCollectionSource.Armoire))
+            .SelectMany(ownership => ownership.CountsBySource
+                .Where(source => IsArmoireCandidateSource(source.Key))
+                .Select(source => new ArmoireCandidate(ownership.ItemId, source.Key, source.Value)))
+            .OrderBy(candidate => candidate.Source)
+            .ThenByDescending(candidate => candidate.ItemId)
+            .ToList();
+
+        ImGui.TextUnformatted($"{candidates.Count} {localization["armoire.candidatesFound"]}");
+        ImGui.TextDisabled(localization["armoire.clickHint"]);
+        ImGui.Spacing();
+
+        using var table = ImRaii.Table("armoire_candidates_table", 4, ImGuiTableFlags.Borders | ImGuiTableFlags.RowBg | ImGuiTableFlags.Resizable | ImGuiTableFlags.ScrollY);
+        if (!table.Success)
+        {
+            return;
+        }
+
+        ImGui.TableSetupColumn(localization["table.item"], ImGuiTableColumnFlags.WidthStretch, 2.5f);
+        ImGui.TableSetupColumn(localization["table.source"], ImGuiTableColumnFlags.WidthFixed, 120);
+        ImGui.TableSetupColumn(localization["table.count"], ImGuiTableColumnFlags.WidthFixed, 60);
+        ImGui.TableSetupColumn(localization["table.id"], ImGuiTableColumnFlags.WidthFixed, 80);
+        ImGui.TableHeadersRow();
+
+        foreach (var candidate in candidates)
+        {
+            if (!dataManager.GetExcelSheet<Item>().TryGetRow(candidate.ItemId, out var item))
+            {
+                continue;
+            }
+
+            var itemName = item.Name.ToString();
+            ImGui.TableNextRow();
+            ImGui.TableNextColumn();
+            DrawSearchableItem(item.Icon, itemName);
+            ImGui.SameLine();
+            if (ImGui.Selectable($"{itemName}##armoire_candidate_{candidate.ItemId}_{candidate.Source}", false))
+            {
+                ImGui.SetClipboardText($"/isearch \"{itemName}\"");
+            }
+
+            ImGui.TableNextColumn();
+            ImGui.TextUnformatted(GetSourceLabel(candidate.Source, localization));
+            ImGui.TableNextColumn();
+            ImGui.TextUnformatted(candidate.Count.ToString());
+            ImGui.TableNextColumn();
+            ImGui.TextDisabled(candidate.ItemId.ToString());
         }
     }
 
@@ -311,7 +376,7 @@ public sealed class MainWindow : Window
         DrawPieces(snapshot, configuration.ShowOnlyMissingPieces ? Array.Empty<ItemSetPiece>() : ownedPieces);
 
         ImGui.TableNextColumn();
-        if (ImGui.SmallButton($"Copy /isearch##{set.SetItemId}"))
+        if (ImGui.SmallButton($"{localization["action.copyIsearch"]}##{set.SetItemId}"))
         {
             ImGui.SetClipboardText($"/isearch \"{set.SetName}\"");
         }
@@ -336,9 +401,7 @@ public sealed class MainWindow : Window
 
     private void DrawPieceIcon(CharacterCollectionSnapshot snapshot, ItemSetPiece piece)
     {
-        var texture = textureProvider.GetFromGameIcon(new GameIconLookup(piece.IconId)).GetWrapOrEmpty();
-        var size = new Vector2(32, 32);
-        ImGui.Image(texture.Handle, size);
+        DrawSearchableItem(piece.IconId, piece.Name);
 
         if (ImGui.IsItemClicked())
         {
@@ -352,16 +415,27 @@ public sealed class MainWindow : Window
             ImGui.TextDisabled($"{piece.Slot} | Item #{piece.ItemId}");
             if (snapshot.Items.TryGetValue(piece.ItemId, out var ownership))
             {
-                ImGui.TextUnformatted(string.Join(", ", ownership.CountsBySource.Keys));
+                ImGui.TextUnformatted(string.Join(", ", ownership.CountsBySource.Keys.Select(source => GetSourceLabel(source, localization))));
             }
             else
             {
-                ImGui.TextDisabled("Missing");
+            ImGui.TextDisabled(localization["table.missing"]);
             }
 
             ImGui.Separator();
-            ImGui.TextDisabled("Click to copy /isearch");
+            ImGui.TextDisabled(localization["hint.clickCopy"]);
             ImGui.EndTooltip();
+        }
+    }
+
+    private void DrawSearchableItem(uint iconId, string itemName)
+    {
+        var texture = textureProvider.GetFromGameIcon(new GameIconLookup(iconId)).GetWrapOrEmpty();
+        var size = new Vector2(32, 32);
+        ImGui.Image(texture.Handle, size);
+        if (ImGui.IsItemClicked())
+        {
+            ImGui.SetClipboardText($"/isearch \"{itemName}\"");
         }
     }
 
@@ -495,18 +569,18 @@ public sealed class MainWindow : Window
             || set.Pieces.Any(piece => piece.Name.Contains(searchText, StringComparison.CurrentCultureIgnoreCase));
     }
 
-    private static string GetFilterLabel(CollectionFilterMode mode)
+    private string GetFilterLabel(CollectionFilterMode mode)
         => mode switch
         {
-            CollectionFilterMode.All => "All",
-            CollectionFilterMode.CurrentRole => "Current role",
-            CollectionFilterMode.Tank => "Tank",
-            CollectionFilterMode.Healer => "Healer",
-            CollectionFilterMode.Melee => "Melee",
-            CollectionFilterMode.PhysicalRanged => "Physical ranged",
-            CollectionFilterMode.Caster => "Caster",
-            CollectionFilterMode.Crafter => "Crafter",
-            CollectionFilterMode.Gatherer => "Gatherer",
+            CollectionFilterMode.All => localization["filter.all"],
+            CollectionFilterMode.CurrentRole => localization["filter.currentRole"],
+            CollectionFilterMode.Tank => localization["filter.tank"],
+            CollectionFilterMode.Healer => localization["filter.healer"],
+            CollectionFilterMode.Melee => localization["filter.melee"],
+            CollectionFilterMode.PhysicalRanged => localization["filter.physicalRanged"],
+            CollectionFilterMode.Caster => localization["filter.caster"],
+            CollectionFilterMode.Crafter => localization["filter.crafter"],
+            CollectionFilterMode.Gatherer => localization["filter.gatherer"],
             _ => mode.ToString(),
         };
 
@@ -523,19 +597,19 @@ public sealed class MainWindow : Window
                 => sets.OrderBy(set => set.SetName, StringComparer.CurrentCultureIgnoreCase).ThenBy(set => set.SetItemId),
         };
 
-    private static string GetSortLabel(ItemSetSortMode mode)
+    private string GetSortLabel(ItemSetSortMode mode)
         => mode switch
         {
-            ItemSetSortMode.Name => "Name",
-            ItemSetSortMode.ItemSetId => "Set ID",
+            ItemSetSortMode.Name => localization["sort.name"],
+            ItemSetSortMode.ItemSetId => localization["sort.setId"],
             _ => mode.ToString(),
         };
 
-    private static string GetSortDirectionLabel(SortDirection direction)
+    private string GetSortDirectionLabel(SortDirection direction)
         => direction switch
         {
-            SortDirection.Ascending => "Asc",
-            SortDirection.Descending => "Desc",
+            SortDirection.Ascending => localization["sort.asc"],
+            SortDirection.Descending => localization["sort.desc"],
             _ => direction.ToString(),
         };
 
@@ -550,18 +624,55 @@ public sealed class MainWindow : Window
             .Where(row => row.Item.RowId != 0)
             .Select(row => row.Item.RowId)
             .ToHashSet();
+
+        foreach (var set in itemSetRepository.GetSets())
+        {
+            if (!armoireItemIds.Contains(set.SetItemId))
+            {
+                continue;
+            }
+
+            foreach (var piece in set.Pieces)
+            {
+                armoireItemIds.Add(piece.ItemId);
+            }
+        }
+
         return armoireItemIds;
     }
 
-    private static string GetCategoryLabel(ItemCollectionCategory category)
+    private static string GetCategoryLabel(ItemCollectionCategory category, Localization localization)
         => category switch
         {
-            ItemCollectionCategory.Inventory => "Inventory",
-            ItemCollectionCategory.Armoury => "Armoury chest",
-            ItemCollectionCategory.Saddlebag => "Saddlebag",
-            ItemCollectionCategory.Retainers => "Retainers",
-            ItemCollectionCategory.GlamourDresser => "Glamour dresser",
-            ItemCollectionCategory.Armoire => "Armoire",
+            ItemCollectionCategory.Inventory => localization["category.inventory"],
+            ItemCollectionCategory.Armoury => localization["category.armoury"],
+            ItemCollectionCategory.Saddlebag => localization["category.saddlebag"],
+            ItemCollectionCategory.Retainers => localization["category.retainers"],
+            ItemCollectionCategory.GlamourDresser => localization["category.glamourDresser"],
+            ItemCollectionCategory.Armoire => localization["category.armoire"],
             _ => category.ToString(),
         };
+
+    private static bool IsArmoireCandidateSource(ItemCollectionSource source)
+        => source is ItemCollectionSource.Inventory
+            or ItemCollectionSource.Armoury
+            or ItemCollectionSource.Saddlebag
+            or ItemCollectionSource.Retainer
+            or ItemCollectionSource.GlamourDresser
+            or ItemCollectionSource.GlamourDresserSet;
+
+    private static string GetSourceLabel(ItemCollectionSource source, Localization localization)
+        => source switch
+        {
+            ItemCollectionSource.Inventory => localization["source.inventory"],
+            ItemCollectionSource.Armoury => localization["source.armoury"],
+            ItemCollectionSource.Saddlebag => localization["source.saddlebag"],
+            ItemCollectionSource.Retainer => localization["source.retainer"],
+            ItemCollectionSource.GlamourDresser => localization["source.glamourDresser"],
+            ItemCollectionSource.GlamourDresserSet => localization["source.glamourDresserSet"],
+            ItemCollectionSource.Armoire => localization["source.armoire"],
+            _ => source.ToString(),
+        };
+
+    private sealed record ArmoireCandidate(uint ItemId, ItemCollectionSource Source, int Count);
 }

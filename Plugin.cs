@@ -29,14 +29,16 @@ public sealed class Plugin : IDalamudPlugin
     public Configuration Configuration { get; }
     public ItemSetRepository ItemSetRepository { get; }
     public ItemCollectionScanner Scanner { get; }
+    public Localization Localization { get; }
 
     public Plugin(IFramework framework)
     {
         this.framework = framework;
         Configuration = PluginInterface.GetPluginConfig() as Configuration ?? new Configuration();
+        Localization = new Localization(ClientState);
         ItemSetRepository = new ItemSetRepository(DataManager);
         Scanner = new ItemCollectionScanner(Configuration, ClientState, PlayerState, DataManager, GameGui, Log, ItemSetRepository);
-        mainWindow = new MainWindow(Configuration, ItemSetRepository, Scanner, PlayerState, DataManager, TextureProvider);
+        mainWindow = new MainWindow(Configuration, ItemSetRepository, Scanner, PlayerState, DataManager, TextureProvider, Localization);
 
         windowSystem.AddWindow(mainWindow);
         PluginInterface.UiBuilder.Draw += windowSystem.Draw;

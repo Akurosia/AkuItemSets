@@ -4,8 +4,8 @@
     "Name": "AkuItemSets",
     "InternalName": "AkuItemSets",
     "Description": "Scans inventory, armoury chest, saddlebag, retainers, glamour dresser, and armoire to show item set collection progress with job filters.",
-    "AssemblyVersion": "0.1.0.0",
-    "TestingAssemblyVersion": "0.1.0.0",
+    "AssemblyVersion": "0.0.1",
+    "TestingAssemblyVersion": "0.0.1",
     "RepoUrl": "https://github.com/Akurosia/AkuItemSets",
     "IconUrl": "https://github.com/Akurosia/AkuItemSets/raw/main/icon.png",
     "ApplicableVersion": "any",
@@ -17,8 +17,8 @@
       "glamour",
       "sets"
     ],
-    "DownloadLinkInstall": "https://github.com/Akurosia/AkuItemSets/releases/download/v0.1.0.0/latest.zip",
-    "DownloadLinkTesting": "https://github.com/Akurosia/AkuItemSets/releases/download/v0.1.0.0/latest.zip",
-    "DownloadLinkUpdate": "https://github.com/Akurosia/AkuItemSets/releases/download/v0.1.0.0/latest.zip"
+    "DownloadLinkInstall": "https://github.com/Akurosia/AkuItemSets/releases/download/v0.0.1/latest.zip",
+    "DownloadLinkTesting": "https://github.com/Akurosia/AkuItemSets/releases/download/v0.0.1/latest.zip",
+    "DownloadLinkUpdate": "https://github.com/Akurosia/AkuItemSets/releases/download/v0.0.1/latest.zip"
   }
 ]

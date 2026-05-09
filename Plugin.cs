@@ -23,13 +23,15 @@ public sealed class Plugin : IDalamudPlugin
 
     private readonly WindowSystem windowSystem = new("AkuItemSets");
     private readonly MainWindow mainWindow;
+    private readonly IFramework framework;
 
     public Configuration Configuration { get; }
     public ItemSetRepository ItemSetRepository { get; }
     public ItemCollectionScanner Scanner { get; }
 
-    public Plugin()
+    public Plugin(IFramework framework)
     {
+        this.framework = framework;
         Configuration = PluginInterface.GetPluginConfig() as Configuration ?? new Configuration();
         ItemSetRepository = new ItemSetRepository(DataManager);
         Scanner = new ItemCollectionScanner(Configuration, ClientState, PlayerState, DataManager, Log, ItemSetRepository);
@@ -46,15 +48,13 @@ public sealed class Plugin : IDalamudPlugin
         });
 
         ClientState.Login += OnLogin;
-        if (ClientState.IsLoggedIn)
-        {
-            Scanner.ScanCurrentCharacter();
-        }
+        framework.Update += OnFrameworkUpdate;
     }
 
     public void Dispose()
     {
         ClientState.Login -= OnLogin;
+        framework.Update -= OnFrameworkUpdate;
         CommandManager.RemoveHandler(CommandName);
         PluginInterface.UiBuilder.Draw -= windowSystem.Draw;
         PluginInterface.UiBuilder.OpenMainUi -= ToggleMainUi;
@@ -75,6 +75,8 @@ public sealed class Plugin : IDalamudPlugin
     }
 
     private void OnLogin() => Scanner.ScanCurrentCharacter();
+
+    private void OnFrameworkUpdate(IFramework framework) => Scanner.AutoScanIfDue();
 
     private void ToggleMainUi() => mainWindow.Toggle();
 }

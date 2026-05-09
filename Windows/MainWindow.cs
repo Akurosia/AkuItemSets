@@ -46,8 +46,6 @@ public sealed class MainWindow : Window
 
     public override void Draw()
     {
-        DrawToolbar();
-
         var snapshot = scanner.CurrentSnapshot;
         if (snapshot == null)
         {
@@ -60,17 +58,32 @@ public sealed class MainWindow : Window
         ImGui.TextDisabled($"Last scan: {snapshot.LastScanUtc.LocalDateTime:g}");
         ImGui.Separator();
 
-        DrawSetTable(snapshot);
+        using var tabs = ImRaii.TabBar("aku_item_sets_tabs");
+        if (!tabs.Success)
+        {
+            return;
+        }
+
+        using (var tab = ImRaii.TabItem("Collection"))
+        {
+            if (tab.Success)
+            {
+                DrawToolbar();
+                DrawSetTable(snapshot);
+            }
+        }
+
+        using (var tab = ImRaii.TabItem("Scan status"))
+        {
+            if (tab.Success)
+            {
+                DrawScanStatus(snapshot);
+            }
+        }
     }
 
     private void DrawToolbar()
     {
-        if (ImGui.Button("Scan now"))
-        {
-            scanner.ScanCurrentCharacter();
-        }
-
-        ImGui.SameLine();
         ImGui.SetNextItemWidth(220);
         var search = configuration.SearchText;
         if (ImGui.InputTextWithHint("##search", "Search set or item", ref search, 128))
@@ -124,6 +137,39 @@ public sealed class MainWindow : Window
         {
             configuration.IncludeAllClassItemsInRoleFilters = includeAllClass;
             configuration.Save();
+        }
+    }
+
+    private static void DrawScanStatus(CharacterCollectionSnapshot snapshot)
+    {
+        ImGui.TextUnformatted("Automatic scans run while you are logged in.");
+        ImGui.TextDisabled("Categories that depend on game caches update after the game has loaded that storage.");
+        ImGui.Spacing();
+
+        using var table = ImRaii.Table("scan_status_table", 2, ImGuiTableFlags.Borders | ImGuiTableFlags.RowBg | ImGuiTableFlags.Resizable);
+        if (!table.Success)
+        {
+            return;
+        }
+
+        ImGui.TableSetupColumn("Category", ImGuiTableColumnFlags.WidthFixed, 180);
+        ImGui.TableSetupColumn("Last scanned", ImGuiTableColumnFlags.WidthStretch);
+        ImGui.TableHeadersRow();
+
+        foreach (var category in Enum.GetValues<ItemCollectionCategory>())
+        {
+            ImGui.TableNextRow();
+            ImGui.TableNextColumn();
+            ImGui.TextUnformatted(GetCategoryLabel(category));
+            ImGui.TableNextColumn();
+            if (snapshot.LastScanByCategory.TryGetValue(category, out var lastScan))
+            {
+                ImGui.TextUnformatted(lastScan.LocalDateTime.ToString("g"));
+            }
+            else
+            {
+                ImGui.TextDisabled("Not scanned yet");
+            }
         }
     }
 
@@ -376,5 +422,17 @@ public sealed class MainWindow : Window
             CollectionFilterMode.Crafter => "Crafter",
             CollectionFilterMode.Gatherer => "Gatherer",
             _ => mode.ToString(),
+        };
+
+    private static string GetCategoryLabel(ItemCollectionCategory category)
+        => category switch
+        {
+            ItemCollectionCategory.Inventory => "Inventory",
+            ItemCollectionCategory.Armoury => "Armoury chest",
+            ItemCollectionCategory.Saddlebag => "Saddlebag",
+            ItemCollectionCategory.Retainers => "Retainers",
+            ItemCollectionCategory.GlamourDresser => "Glamour dresser",
+            ItemCollectionCategory.Armoire => "Armoire",
+            _ => category.ToString(),
         };
 }

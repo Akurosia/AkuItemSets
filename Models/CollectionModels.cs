@@ -27,6 +27,16 @@ public enum ItemCollectionSource
     Armoire,
 }
 
+public enum ItemCollectionCategory
+{
+    Inventory,
+    Armoury,
+    Saddlebag,
+    Retainers,
+    GlamourDresser,
+    Armoire,
+}
+
 [Serializable]
 public sealed class CharacterCollectionSnapshot
 {
@@ -34,6 +44,7 @@ public sealed class CharacterCollectionSnapshot
     public string CharacterName { get; set; } = string.Empty;
     public string WorldName { get; set; } = string.Empty;
     public DateTimeOffset LastScanUtc { get; set; }
+    public Dictionary<ItemCollectionCategory, DateTimeOffset> LastScanByCategory { get; set; } = new();
     public Dictionary<uint, ItemOwnership> Items { get; set; } = new();
 }
 

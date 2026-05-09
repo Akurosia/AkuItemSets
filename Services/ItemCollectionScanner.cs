@@ -158,6 +158,7 @@ public sealed class ItemCollectionScanner
         RemoveSources(snapshot, ItemCollectionSource.Retainer);
         AddCollectedItems(snapshot, collectedItems, ItemCollectionSource.Retainer);
         MarkCategoryScanned(snapshot, ItemCollectionCategory.Retainers, scanStartedUtc);
+        MarkActiveRetainerScanned(snapshot, scanStartedUtc);
         return true;
     }
 
@@ -313,6 +314,24 @@ public sealed class ItemCollectionScanner
 
     private static void MarkCategoryScanned(CharacterCollectionSnapshot snapshot, ItemCollectionCategory category, DateTimeOffset scanStartedUtc)
         => snapshot.LastScanByCategory[category] = scanStartedUtc;
+
+    private static unsafe void MarkActiveRetainerScanned(CharacterCollectionSnapshot snapshot, DateTimeOffset scanStartedUtc)
+    {
+        try
+        {
+            var retainerManager = RetainerManager.Instance();
+            var activeRetainer = retainerManager == null ? null : retainerManager->GetActiveRetainer();
+            var retainerName = activeRetainer == null ? string.Empty : activeRetainer->NameString;
+            if (!string.IsNullOrWhiteSpace(retainerName))
+            {
+                snapshot.LastRetainerScanByName[retainerName] = scanStartedUtc;
+            }
+        }
+        catch
+        {
+            // Retainer metadata is best-effort; the aggregate retainer timestamp still records a valid item scan.
+        }
+    }
 
     private static void RemoveSources(CharacterCollectionSnapshot snapshot, params ItemCollectionSource[] sources)
     {

@@ -20,6 +20,7 @@ public sealed class MainWindow : Window
     private readonly IPlayerState playerState;
     private readonly IDataManager dataManager;
     private readonly ITextureProvider textureProvider;
+    private HashSet<uint>? armoireItemIds;
 
     public MainWindow(
         Configuration configuration,
@@ -116,6 +117,52 @@ public sealed class MainWindow : Window
         }
 
         ImGui.SameLine();
+        ImGui.SetNextItemWidth(120);
+        var sortMode = configuration.SortMode;
+        if (ImGui.BeginCombo("##sort", GetSortLabel(sortMode)))
+        {
+            foreach (var value in Enum.GetValues<ItemSetSortMode>())
+            {
+                var selected = sortMode == value;
+                if (ImGui.Selectable(GetSortLabel(value), selected))
+                {
+                    configuration.SortMode = value;
+                    configuration.Save();
+                }
+
+                if (selected)
+                {
+                    ImGui.SetItemDefaultFocus();
+                }
+            }
+
+            ImGui.EndCombo();
+        }
+
+        ImGui.SameLine();
+        ImGui.SetNextItemWidth(80);
+        var sortDirection = configuration.SortDirection;
+        if (ImGui.BeginCombo("##sortDirection", GetSortDirectionLabel(sortDirection)))
+        {
+            foreach (var value in Enum.GetValues<SortDirection>())
+            {
+                var selected = sortDirection == value;
+                if (ImGui.Selectable(GetSortDirectionLabel(value), selected))
+                {
+                    configuration.SortDirection = value;
+                    configuration.Save();
+                }
+
+                if (selected)
+                {
+                    ImGui.SetItemDefaultFocus();
+                }
+            }
+
+            ImGui.EndCombo();
+        }
+
+        ImGui.SameLine();
         var hideCompleted = configuration.HideCompletedSets;
         if (ImGui.Checkbox("Hide complete", ref hideCompleted))
         {
@@ -170,6 +217,25 @@ public sealed class MainWindow : Window
             {
                 ImGui.TextDisabled("Not scanned yet");
             }
+
+            if (category == ItemCollectionCategory.Retainers)
+            {
+                DrawRetainerScanRows(snapshot);
+            }
+        }
+    }
+
+    private static void DrawRetainerScanRows(CharacterCollectionSnapshot snapshot)
+    {
+        foreach (var (retainerName, lastScan) in snapshot.LastRetainerScanByName.OrderBy(entry => entry.Key, StringComparer.CurrentCultureIgnoreCase))
+        {
+            ImGui.TableNextRow();
+            ImGui.TableNextColumn();
+            ImGui.Indent(16);
+            ImGui.TextUnformatted(retainerName);
+            ImGui.Unindent(16);
+            ImGui.TableNextColumn();
+            ImGui.TextUnformatted(lastScan.LocalDateTime.ToString("g"));
         }
     }
 
@@ -179,6 +245,8 @@ public sealed class MainWindow : Window
             .Where(set => MatchesSearch(set, configuration.SearchText))
             .Where(MatchesFilter)
             .ToList();
+
+        sets = ApplySort(sets).ToList();
 
         var visibleSets = configuration.HideCompletedSets
             ? sets.Where(set => GetPiecesForActiveFilter(set).Any(piece => !snapshot.Items.ContainsKey(piece.ItemId))).ToList()
@@ -219,7 +287,15 @@ public sealed class MainWindow : Window
 
         ImGui.TableNextRow();
         ImGui.TableNextColumn();
-        ImGui.TextUnformatted(set.SetName);
+        if (filteredPieces.Count > 0 && filteredPieces.All(piece => GetArmoireItemIds().Contains(piece.ItemId)))
+        {
+            ImGui.TextColored(new Vector4(0.35f, 0.95f, 0.45f, 1.0f), set.SetName);
+        }
+        else
+        {
+            ImGui.TextUnformatted(set.SetName);
+        }
+
         ImGui.TextDisabled($"#{set.SetItemId}");
 
         ImGui.TableNextColumn();
@@ -423,6 +499,49 @@ public sealed class MainWindow : Window
             CollectionFilterMode.Gatherer => "Gatherer",
             _ => mode.ToString(),
         };
+
+    private IEnumerable<ItemSetDefinition> ApplySort(IEnumerable<ItemSetDefinition> sets)
+        => configuration.SortMode switch
+        {
+            ItemSetSortMode.ItemSetId when configuration.SortDirection == SortDirection.Descending
+                => sets.OrderByDescending(set => set.SetItemId).ThenBy(set => set.SetName, StringComparer.CurrentCultureIgnoreCase),
+            ItemSetSortMode.ItemSetId
+                => sets.OrderBy(set => set.SetItemId).ThenBy(set => set.SetName, StringComparer.CurrentCultureIgnoreCase),
+            _ when configuration.SortDirection == SortDirection.Descending
+                => sets.OrderByDescending(set => set.SetName, StringComparer.CurrentCultureIgnoreCase).ThenByDescending(set => set.SetItemId),
+            _
+                => sets.OrderBy(set => set.SetName, StringComparer.CurrentCultureIgnoreCase).ThenBy(set => set.SetItemId),
+        };
+
+    private static string GetSortLabel(ItemSetSortMode mode)
+        => mode switch
+        {
+            ItemSetSortMode.Name => "Name",
+            ItemSetSortMode.ItemSetId => "Set ID",
+            _ => mode.ToString(),
+        };
+
+    private static string GetSortDirectionLabel(SortDirection direction)
+        => direction switch
+        {
+            SortDirection.Ascending => "Asc",
+            SortDirection.Descending => "Desc",
+            _ => direction.ToString(),
+        };
+
+    private HashSet<uint> GetArmoireItemIds()
+    {
+        if (armoireItemIds != null)
+        {
+            return armoireItemIds;
+        }
+
+        armoireItemIds = dataManager.GetExcelSheet<Cabinet>()
+            .Where(row => row.Item.RowId != 0)
+            .Select(row => row.Item.RowId)
+            .ToHashSet();
+        return armoireItemIds;
+    }
 
     private static string GetCategoryLabel(ItemCollectionCategory category)
         => category switch

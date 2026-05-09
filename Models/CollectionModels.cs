@@ -16,6 +16,18 @@ public enum CollectionFilterMode
     Gatherer,
 }
 
+public enum ItemSetSortMode
+{
+    Name,
+    ItemSetId,
+}
+
+public enum SortDirection
+{
+    Ascending,
+    Descending,
+}
+
 public enum ItemCollectionSource
 {
     Inventory,
@@ -45,6 +57,7 @@ public sealed class CharacterCollectionSnapshot
     public string WorldName { get; set; } = string.Empty;
     public DateTimeOffset LastScanUtc { get; set; }
     public Dictionary<ItemCollectionCategory, DateTimeOffset> LastScanByCategory { get; set; } = new();
+    public Dictionary<string, DateTimeOffset> LastRetainerScanByName { get; set; } = new();
     public Dictionary<uint, ItemOwnership> Items { get; set; } = new();
 }
 

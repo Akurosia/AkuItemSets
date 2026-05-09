@@ -1,105 +1,134 @@
-name: Release
+name: Build and Release
 
-# Add a concurrency group incase a tag is created, deleted, and then recreated while a release is in progress.
-concurrency:
-    group: ${{ github.workflow }}-${{ github.ref }}
-    cancel-in-progress: true
-
-# Only run this workflow when a tag is pushed when the tag starts with "v".
 on:
-    push:
-        tags:
-            - "v*"
-    workflow_dispatch:
+  push:
+    branches:
+      - main
+    tags:
+      - "v*"
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
 
-# So we can use the GitHub API to create releases with the run token.
 permissions:
-    contents: write
+  contents: write
 
 jobs:
-    Release:
-      runs-on: ubuntu-latest
-      defaults:
-          run:
-              working-directory: AkuItemSets/
-              shell: bash
-      env:
-          DALAMUD_HOME: /tmp/dalamud
-          IsCI: true
-      steps:
-          - name: Checkout Repository
-            uses: actions/checkout@v4
-            with:
-                submodules: true # Grab any submodules that may be required
+  build:
+    runs-on: ubuntu-latest
+    env:
+      DALAMUD_HOME: /tmp/dalamud
+      IsCI: true
 
-          - name: Setup .NET
-            uses: actions/setup-dotnet@v4
-            with:
-                dotnet-version: 10.0.x
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-          - name: Download Dalamud Library
-            run: |
-                wget https://goatcorp.github.io/dalamud-distrib/latest.zip -O /tmp/dalamud.zip
-                unzip /tmp/dalamud.zip -d /tmp/dalamud
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
 
-          - name: Restore Dependencies
-            run: dotnet restore
+      - name: Download Dalamud
+        run: |
+          mkdir -p "$DALAMUD_HOME"
+          curl -L https://goatcorp.github.io/dalamud-distrib/latest.zip -o /tmp/dalamud.zip
+          unzip -q /tmp/dalamud.zip -d "$DALAMUD_HOME"
 
-          - name: Build plugin in release mode
-            run: |
-                version=$(echo ${{ github.ref_name }} | sed 's/^v//')
-                echo "Version: $version"
-                dotnet build -c Release --no-restore --nologo -o ./bin/Release -p:Version=$version -p:AssemblyVersion=$version -p:FileVersion=$version
+      - name: Restore
+        run: dotnet restore AkuItemSets.csproj
 
-          - name: Generate Checksums
-            working-directory: AkuItemSets/bin/Release/AkuItemSets/
-            run: |
-                sha512sum latest.zip >> checksums.sha512
-                
-          - name: Create GitHub Release
-            uses: softprops/action-gh-release@v1
-            with:
-                files: |
-                    AkuItemSets/bin/Release/AkuItemSets/latest.zip
-                    AkuItemSets/bin/Release/AkuItemSets/checksums.sha512
-                prerelease: false # Releases cant be marked as prereleases as Dalamud wont be able to find them
-                append_body: true # Append the release notes to the release body
-                body_path: .github/release-notices.md # These notes are automatically added to the release body every time.
-                generate_release_notes: true # Automatically makes a release body from PRs since the last release.
-                fail_on_unmatched_files: true # If the files arent found, fail the workflow and abort the release.
+      - name: Resolve version
+        id: version
+        shell: bash
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            version="${GITHUB_REF_NAME#v}"
+          else
+            version="$(grep -oPm1 '(?<=<Version>)[^<]+' AkuItemSets.csproj)"
+          fi
 
-          - name: Upload Artifacts
-            uses: actions/upload-artifact@v4
-            with:
-                name: Release Artifacts
-                path: |
-                    AkuItemSets/bin/Release/AkuItemSets/latest.zip
-                    AkuItemSets/bin/Release/AkuItemSets/checksums.sha512
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Resolved version: $version"
 
-          - name: Update repo.json
-            run: |
-                cd ../
+      - name: Build
+        run: |
+          dotnet build AkuItemSets.csproj \
+            -c Release \
+            --no-restore \
+            --nologo \
+            -p:Version=${{ steps.version.outputs.version }} \
+            -p:AssemblyVersion=${{ steps.version.outputs.version }} \
+            -p:FileVersion=${{ steps.version.outputs.version }}
 
-                release_version=$(echo "${{ github.ref_name }}" | sed 's/^v//')
-                echo "Release Version: $release_version"
-                repo_url="$(echo "${{ github.server_url }}/${{ github.repository }}" | sed 's/#/\\#/g')"
-                echo "Repo URL: $repo_url"
-                                
-                # Update the JSON file using jq
-                jq --arg release_version "$release_version" \
-                --arg repo_url "$repo_url/releases/download/${{ github.ref_name }}/latest.zip" \
-                '.[0].AssemblyVersion = $release_version |
-                .[0].TestingAssemblyVersion = $release_version |
-                .[0].DownloadLinkInstall = $repo_url |
-                .[0].DownloadLinkUpdate = $repo_url  |
-                .[0].DownloadLinkTesting = $repo_url' \
-                repo.json > tmp.json && mv tmp.json repo.json
-                
-                cat repo.json
-                
-                git add repo.json                
-                git config --local user.name "github-actions [bot]"
-                git config --local user.email "github-actions@users.noreply.github.com"
-                git commit -m "Update repo.json for ${{ github.ref_name }}"
-                
-                git push origin HEAD:master
+      - name: Collect packaged artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          package_path="$(find bin/Release -path '*/latest.zip' -type f | head -n 1)"
+          if [[ -z "${package_path}" ]]; then
+            echo "Could not find latest.zip under bin/Release"
+            find bin/Release -maxdepth 4 -type f -print
+            exit 1
+          fi
+
+          mkdir -p artifacts
+          cp "$package_path" artifacts/latest.zip
+          sha512sum artifacts/latest.zip > artifacts/checksums.sha512
+          unzip -l artifacts/latest.zip
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: AkuItemSets-${{ steps.version.outputs.version }}
+          path: |
+            artifacts/latest.zip
+            artifacts/checksums.sha512
+          if-no-files-found: error
+
+      - name: Create GitHub release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            artifacts/latest.zip
+            artifacts/checksums.sha512
+          prerelease: false
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+
+      - name: Update repo.json
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          release_version="${{ steps.version.outputs.version }}"
+          download_url="${{ github.server_url }}/${{ github.repository }}/releases/download/${{ github.ref_name }}/latest.zip"
+
+          jq \
+            --arg release_version "$release_version" \
+            --arg download_url "$download_url" \
+            '.[0].AssemblyVersion = $release_version |
+             .[0].TestingAssemblyVersion = $release_version |
+             .[0].DownloadLinkInstall = $download_url |
+             .[0].DownloadLinkUpdate = $download_url |
+             .[0].DownloadLinkTesting = $download_url' \
+            repo.json > repo.tmp.json
+
+          mv repo.tmp.json repo.json
+          cat repo.json
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add repo.json
+
+          if git diff --cached --quiet; then
+            echo "repo.json already up to date"
+            exit 0
+          fi
+
+          git commit -m "Update repo.json for ${{ github.ref_name }}"
+          git push origin HEAD:main

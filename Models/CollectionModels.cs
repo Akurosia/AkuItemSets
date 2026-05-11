@@ -91,6 +91,7 @@ public sealed record ItemSetDefinition(
     string? LootSourceName = null,
     string? LootSourceUrl = null,
     IReadOnlyList<string>? LootSourceAliases = null,
+    IReadOnlyList<uint>? LootSourceContentFinderConditionIds = null,
     IReadOnlyList<uint>? LootSourceTerritoryTypeIds = null);
 
 public sealed record ItemSetPiece(

@@ -100,7 +100,7 @@ public sealed class ItemSetRepository
                 }
 
                 var lootSourceName = GetBestSourceName(outfitSource);
-                result.Add(new ItemSetDefinition(itemRef.RowId, setName, iconId, pieces, lootSourceName, outfitSource?.SourceUrl, outfitSource?.SourceAliases, outfitSource?.SourceTerritoryTypeIds));
+                result.Add(new ItemSetDefinition(itemRef.RowId, setName, iconId, pieces, lootSourceName, outfitSource?.SourceUrl, outfitSource?.SourceAliases, outfitSource?.SourceContentFinderConditionIds, outfitSource?.SourceTerritoryTypeIds));
             }
         }
 
@@ -781,6 +781,7 @@ public sealed class OutfitSourceRecord
     public string? SourceUrl { get; set; }
     public List<string> SourceAliases { get; set; } = [];
     public List<uint> ItemIds { get; set; } = [];
+    public List<uint> SourceContentFinderConditionIds { get; set; } = [];
     public List<uint> SourceTerritoryTypeIds { get; set; } = [];
     public string NormalizedSetName { get; set; } = string.Empty;
     public string NormalizedOutfitName { get; set; } = string.Empty;

@@ -14,6 +14,7 @@ from urllib.request import Request, urlopen
 
 OUTFITS_URL = "https://ffxivcollect.com/outfits"
 OUTFITS_API_URL = "https://ffxivcollect.com/api/outfits"
+CONTENT_FINDER_CONDITION_API_URL = "https://v2.xivapi.com/api/sheet/ContentFinderCondition"
 OUTFIT_LINK_RE = re.compile(r"(?:^|/)outfits/\d+(?:[?#].*)?$", re.IGNORECASE)
 OUTFIT_SET_ID_RE = re.compile(r"(?:^|/)outfits/(\d+)(?:[?#].*)?$", re.IGNORECASE)
 GARLAND_SOURCE_RE = re.compile(r"garlandtools\.org", re.IGNORECASE)
@@ -32,6 +33,14 @@ class OutfitSource:
     sourceUrl: str | None = None
     sourceAliases: list[str] = field(default_factory=list)
     itemIds: list[int] = field(default_factory=list)
+    sourceContentFinderConditionIds: list[int] = field(default_factory=list)
+    sourceTerritoryTypeIds: list[int] = field(default_factory=list)
+
+@dataclass(frozen=True)
+class ContentSourceMatch:
+    contentFinderConditionId: int
+    territoryTypeId: int
+    name: str
 
 class OutfitPageParser(HTMLParser):
     def __init__(self) -> None:
@@ -98,6 +107,12 @@ def fetch_json(url: str) -> Any:
 
 def normalize_lookup_name(value: str) -> str:
     return "".join(ch.lower() for ch in value if ch.isalnum())
+
+def normalize_content_name(value: str) -> str:
+    value = value.replace("–", "-").replace("—", "-").replace("'", "")
+    value = re.sub(r"\([^)]*\)", " ", value)
+    value = re.sub(r"\b(?:the|a|an)\b", " ", value, flags=re.IGNORECASE)
+    return normalize_lookup_name(value)
 
 def clean_text(value: Any) -> str:
     return " ".join(str(value or "").split())
@@ -189,11 +204,111 @@ def add_unique(records: list[OutfitSource], seen: set[tuple[int, str, str]], set
                 for item_id in source_item_ids:
                     if item_id not in merged:
                         merged.append(item_id)
-                records[records.index(record)] = OutfitSource(record.setId or set_id, record.setName, record.sourceName, record.sourceUrl or source_url, record.sourceAliases, merged)
+                records[records.index(record)] = OutfitSource(record.setId or set_id, record.setName, record.sourceName, record.sourceUrl or source_url, record.sourceAliases, merged, record.sourceContentFinderConditionIds, record.sourceTerritoryTypeIds)
                 break
         return
     seen.add(key)
     records.append(OutfitSource(set_id, set_name, source_name, source_url, source_aliases, source_item_ids))
+
+def xivapi_sheet_rows(url: str, *, fields: str, limit: int = 500) -> Iterable[dict[str, Any]]:
+    after = 0
+    while True:
+        separator = "&" if "?" in url else "?"
+        payload = fetch_json(f"{url}{separator}limit={limit}&after={after}&fields={fields}")
+        rows = payload.get("rows") if isinstance(payload, dict) else None
+        if not rows:
+            return
+        for row in rows:
+            if isinstance(row, dict):
+                yield row
+        last_row_id = rows[-1].get("row_id") if isinstance(rows[-1], dict) else None
+        if not isinstance(last_row_id, int) or last_row_id <= after:
+            return
+        after = last_row_id
+
+def build_content_source_lookup(cache_path: Path | None = None, refresh_cache: bool = False) -> dict[str, list[ContentSourceMatch]]:
+    if cache_path and cache_path.exists() and not refresh_cache:
+        cached = json.loads(cache_path.read_text(encoding="utf-8"))
+        return deserialize_content_source_lookup(cached)
+
+    lookup: dict[str, list[ContentSourceMatch]] = {}
+    for row in xivapi_sheet_rows(CONTENT_FINDER_CONDITION_API_URL, fields="Name,NameShort,TerritoryType.value"):
+        row_id = row.get("row_id")
+        fields = row.get("fields") or {}
+        if not isinstance(row_id, int) or row_id <= 0:
+            continue
+        territory = fields.get("TerritoryType") or {}
+        territory_id = territory.get("value") if isinstance(territory, dict) else None
+        if not isinstance(territory_id, int) or territory_id <= 0:
+            continue
+        names = [clean_text(fields.get("Name")), clean_text(fields.get("NameShort"))]
+        for name in names:
+            if not name:
+                continue
+            match = ContentSourceMatch(row_id, territory_id, name)
+            for key in {normalize_lookup_name(name), normalize_content_name(name)}:
+                if key:
+                    lookup.setdefault(key, [])
+                    if match not in lookup[key]:
+                        lookup[key].append(match)
+
+    if cache_path:
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        cache_path.write_text(json.dumps(serialize_content_source_lookup(lookup), ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+    return lookup
+
+def serialize_content_source_lookup(lookup: dict[str, list[ContentSourceMatch]]) -> dict[str, list[dict[str, Any]]]:
+    return {
+        key: [asdict(match) for match in matches]
+        for key, matches in sorted(lookup.items())
+    }
+
+def deserialize_content_source_lookup(value: Any) -> dict[str, list[ContentSourceMatch]]:
+    lookup: dict[str, list[ContentSourceMatch]] = {}
+    if not isinstance(value, dict):
+        return lookup
+    for key, matches in value.items():
+        if not isinstance(key, str) or not isinstance(matches, list):
+            continue
+        parsed: list[ContentSourceMatch] = []
+        for match in matches:
+            if not isinstance(match, dict):
+                continue
+            content_id = match.get("contentFinderConditionId")
+            territory_id = match.get("territoryTypeId")
+            name = clean_text(match.get("name"))
+            if isinstance(content_id, int) and isinstance(territory_id, int) and content_id > 0 and territory_id > 0 and name:
+                parsed.append(ContentSourceMatch(content_id, territory_id, name))
+        if parsed:
+            lookup[key] = parsed
+    return lookup
+
+def resolve_content_source_ids(records: list[OutfitSource], lookup: dict[str, list[ContentSourceMatch]]) -> list[OutfitSource]:
+    resolved: list[OutfitSource] = []
+    for record in records:
+        search_names = [record.sourceName, *record.sourceAliases]
+        matches: list[ContentSourceMatch] = []
+        for name in search_names:
+            for key in (normalize_lookup_name(name), normalize_content_name(name)):
+                for match in lookup.get(key, []):
+                    if match not in matches:
+                        matches.append(match)
+
+        content_ids = sorted({match.contentFinderConditionId for match in matches})
+        territory_ids = sorted({match.territoryTypeId for match in matches})
+        resolved.append(OutfitSource(
+            record.setId,
+            record.setName,
+            record.sourceName,
+            record.sourceUrl,
+            record.sourceAliases,
+            record.itemIds,
+            content_ids,
+            territory_ids,
+        ))
+
+    return resolved
 
 def iter_api_outfits(payload: Any) -> Iterable[dict[str, Any]]:
     if isinstance(payload, list):
@@ -389,6 +504,9 @@ def main() -> int:
     ap.add_argument("--input-json", help="Use a saved FFXIV Collect outfits API JSON file instead of downloading it.")
     ap.add_argument("--html-only", action="store_true", help="Skip the API attempt and parse the outfits page HTML directly.")
     ap.add_argument("--save-debug-html", help="Also save the downloaded outfits HTML to this path for debugging.")
+    ap.add_argument("--content-cache", default="../Data/content_finder_lookup_cache.json", help="Cache file for XIVAPI ContentFinderCondition lookups.")
+    ap.add_argument("--refresh-content-cache", action="store_true", help="Refresh the ContentFinderCondition cache from XIVAPI.")
+    ap.add_argument("--skip-content-resolve", action="store_true", help="Do not resolve source names to ContentFinderCondition/TerritoryType ids.")
     args = ap.parse_args()
 
     records: list[OutfitSource] = []
@@ -409,6 +527,13 @@ def main() -> int:
             print(f"Saved downloaded HTML to {args.save_debug_html}")
         records = build_sources_from_html(html)
 
+    resolved_count = 0
+    if records and not args.skip_content_resolve:
+        cache_path = Path(args.content_cache) if args.content_cache else None
+        content_lookup = build_content_source_lookup(cache_path, args.refresh_content_cache)
+        records = resolve_content_source_ids(records, content_lookup)
+        resolved_count = sum(1 for record in records if record.sourceTerritoryTypeIds)
+
     records = sorted(records, key=lambda record: (record.setId or 0, normalize_lookup_name(record.setName), normalize_lookup_name(record.sourceName)))
     out = Path(args.output)
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -416,12 +541,14 @@ def main() -> int:
     set_id_count = sum(1 for record in records if record.setId)
     item_link_count = sum(1 for record in records if record.itemIds)
     total_item_ids = sum(len(record.itemIds) for record in records)
+    territory_link_count = sum(1 for record in records if record.sourceTerritoryTypeIds)
     print(f"Wrote {len(records)} outfit source links to {out}")
     print(f"Records with direct set id links: {set_id_count}")
     print(f"Records with direct item id links: {item_link_count}")
     print(f"Total direct item id links: {total_item_ids}")
+    print(f"Records matched to ContentFinderCondition/TerritoryType ids: {territory_link_count}")
     for record in records[:10]:
-        print(f"Sample: setId={record.setId} set={record.setName!r} source={record.sourceName!r} itemIds={record.itemIds[:12]}")
+        print(f"Sample: setId={record.setId} set={record.setName!r} source={record.sourceName!r} itemIds={record.itemIds[:12]} territories={record.sourceTerritoryTypeIds[:8]}")
     if records and item_link_count == 0:
         print("Note: No records contain direct item IDs. This is okay for the current plugin build because it also matches FFXIV Collect outfit names against English item-piece tokens and can infer territory names from item pieces.")
     if not records:

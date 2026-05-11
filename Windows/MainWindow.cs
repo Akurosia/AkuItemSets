@@ -33,7 +33,7 @@ public sealed class MainWindow : Window
     private bool armoireCandidatesTabActive;
     private string armoireClassJobFilter = "All";
     private bool loggedCurrentInstanceEmptyResult;
-    private Dictionary<uint, string>? fallbackOutfitSourceNamesBySetId;
+    private Dictionary<uint, FallbackOutfitSource>? fallbackOutfitSourcesBySetId;
 
     public MainWindow(
         Configuration configuration,
@@ -1228,13 +1228,20 @@ public sealed class MainWindow : Window
             return true;
         }
 
+        var fallback = GetFallbackOutfitSource(set.SetItemId);
+        if (fallback?.TerritoryTypeIds.Contains(currentTerritoryId) == true)
+        {
+            return true;
+        }
+
         var currentNames = GetTerritoryNames(currentTerritoryId).Select(NormalizeLookupName).Where(name => name.Length > 0).ToHashSet(StringComparer.OrdinalIgnoreCase);
         if (currentNames.Count == 0)
         {
             return false;
         }
 
-        return GetLootSourceNames(set).Select(NormalizeLookupName).Any(currentNames.Contains);
+        return GetLootSourceNames(set).Select(NormalizeLookupName).Any(currentNames.Contains)
+            || GetLocalizedLootSourceNames(set).Select(NormalizeLookupName).Any(currentNames.Contains);
     }
 
     private string GetCurrentInstanceLootTooltip()
@@ -1251,7 +1258,35 @@ public sealed class MainWindow : Window
 
     private string GetLocalizedLootSourceName(ItemSetDefinition set)
     {
+        foreach (var contentFinderConditionId in set.LootSourceContentFinderConditionIds ?? [])
+        {
+            var name = GetLocalizedContentFinderConditionName(contentFinderConditionId);
+            if (!string.IsNullOrWhiteSpace(name))
+            {
+                return name;
+            }
+        }
+
+        var fallback = GetFallbackOutfitSource(set.SetItemId);
+        foreach (var contentFinderConditionId in fallback?.ContentFinderConditionIds ?? [])
+        {
+            var name = GetLocalizedContentFinderConditionName(contentFinderConditionId);
+            if (!string.IsNullOrWhiteSpace(name))
+            {
+                return name;
+            }
+        }
+
         foreach (var territoryId in set.LootSourceTerritoryTypeIds ?? [])
+        {
+            var name = GetLocalizedTerritoryName(territoryId);
+            if (!string.IsNullOrWhiteSpace(name))
+            {
+                return name;
+            }
+        }
+
+        foreach (var territoryId in fallback?.TerritoryTypeIds ?? [])
         {
             var name = GetLocalizedTerritoryName(territoryId);
             if (!string.IsNullOrWhiteSpace(name))
@@ -1265,34 +1300,88 @@ public sealed class MainWindow : Window
             return set.LootSourceName;
         }
 
-        var fallback = GetFallbackOutfitSourceName(set.SetItemId);
-        if (!string.IsNullOrWhiteSpace(fallback))
+        if (!string.IsNullOrWhiteSpace(fallback?.SourceName))
         {
-            return fallback;
+            return fallback.SourceName;
         }
 
         return set.LootSourceAliases?.FirstOrDefault(alias => !string.IsNullOrWhiteSpace(alias)) ?? string.Empty;
     }
 
-    private string GetFallbackOutfitSourceName(uint setId)
+    private string GetLocalizedContentFinderConditionName(uint contentFinderConditionId)
     {
-        var sources = GetFallbackOutfitSourceNamesBySetId();
-        return sources.TryGetValue(setId, out var sourceName) ? sourceName : string.Empty;
-    }
-
-    private Dictionary<uint, string> GetFallbackOutfitSourceNamesBySetId()
-    {
-        if (fallbackOutfitSourceNamesBySetId != null)
+        if (!dataManager.GetExcelSheet<ContentFinderCondition>().TryGetRow(contentFinderConditionId, out var condition))
         {
-            return fallbackOutfitSourceNamesBySetId;
+            return string.Empty;
         }
 
-        fallbackOutfitSourceNamesBySetId = new Dictionary<uint, string>();
+        return condition.Name.ToString();
+    }
+
+    private IEnumerable<string> GetLocalizedLootSourceNames(ItemSetDefinition set)
+    {
+        foreach (var contentFinderConditionId in set.LootSourceContentFinderConditionIds ?? [])
+        {
+            var name = GetLocalizedContentFinderConditionName(contentFinderConditionId);
+            if (!string.IsNullOrWhiteSpace(name))
+            {
+                yield return name;
+            }
+        }
+
+        var fallback = GetFallbackOutfitSource(set.SetItemId);
+        foreach (var contentFinderConditionId in fallback?.ContentFinderConditionIds ?? [])
+        {
+            var name = GetLocalizedContentFinderConditionName(contentFinderConditionId);
+            if (!string.IsNullOrWhiteSpace(name))
+            {
+                yield return name;
+            }
+        }
+
+        foreach (var territoryId in set.LootSourceTerritoryTypeIds ?? [])
+        {
+            var name = GetLocalizedTerritoryName(territoryId);
+            if (!string.IsNullOrWhiteSpace(name))
+            {
+                yield return name;
+            }
+        }
+
+        foreach (var territoryId in fallback?.TerritoryTypeIds ?? [])
+        {
+            var name = GetLocalizedTerritoryName(territoryId);
+            if (!string.IsNullOrWhiteSpace(name))
+            {
+                yield return name;
+            }
+        }
+    }
+
+    private string GetFallbackOutfitSourceName(uint setId)
+    {
+        return GetFallbackOutfitSource(setId)?.SourceName ?? string.Empty;
+    }
+
+    private FallbackOutfitSource? GetFallbackOutfitSource(uint setId)
+    {
+        var sources = GetFallbackOutfitSourcesBySetId();
+        return sources.TryGetValue(setId, out var source) ? source : null;
+    }
+
+    private Dictionary<uint, FallbackOutfitSource> GetFallbackOutfitSourcesBySetId()
+    {
+        if (fallbackOutfitSourcesBySetId != null)
+        {
+            return fallbackOutfitSourcesBySetId;
+        }
+
+        fallbackOutfitSourcesBySetId = new Dictionary<uint, FallbackOutfitSource>();
         var path = ItemSetRepository.GetOutfitSourcesPath(Plugin.PluginInterface);
         if (!File.Exists(path))
         {
             log.Warning($"[AkuItemSets] UI source fallback could not find outfit_sources.json at {path}");
-            return fallbackOutfitSourceNamesBySetId;
+            return fallbackOutfitSourcesBySetId;
         }
 
         try
@@ -1307,18 +1396,21 @@ public sealed class MainWindow : Window
                 var sourceName = best?.SourceName;
                 if (!string.IsNullOrWhiteSpace(sourceName))
                 {
-                    fallbackOutfitSourceNamesBySetId[group.Key] = sourceName;
+                    fallbackOutfitSourcesBySetId[group.Key] = new FallbackOutfitSource(
+                        sourceName,
+                        best?.SourceContentFinderConditionIds ?? [],
+                        best?.SourceTerritoryTypeIds ?? []);
                 }
             }
 
-            log.Debug($"[AkuItemSets] UI source fallback loaded {fallbackOutfitSourceNamesBySetId.Count} set-id source names from {path}");
+            log.Debug($"[AkuItemSets] UI source fallback loaded {fallbackOutfitSourcesBySetId.Count} set-id source names from {path}");
         }
         catch (Exception ex)
         {
             log.Warning(ex, $"[AkuItemSets] UI source fallback could not read outfit_sources.json from {path}");
         }
 
-        return fallbackOutfitSourceNamesBySetId;
+        return fallbackOutfitSourcesBySetId;
     }
 
     private static bool IsGenericStoreSource(string? sourceName)
@@ -1619,6 +1711,8 @@ public sealed class MainWindow : Window
     {
         public Vector2 Center => Position + (Size / 2.0f);
     }
+
+    private sealed record FallbackOutfitSource(string SourceName, IReadOnlyList<uint> ContentFinderConditionIds, IReadOnlyList<uint> TerritoryTypeIds);
 
     private static class InventoryContainerTypes
     {

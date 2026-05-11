@@ -16,6 +16,7 @@ public sealed class ItemCollectionScanner
     private static readonly TimeSpan AutoScanInterval = TimeSpan.FromMinutes(2);
     private static readonly TimeSpan StorageOpenScanInterval = TimeSpan.FromSeconds(1);
     private static readonly TimeSpan InventoryToDresserTransferGrace = TimeSpan.FromMinutes(2);
+    private static readonly TimeSpan SourceScanStabilityDelay = TimeSpan.FromMilliseconds(750);
     private readonly Configuration configuration;
     private readonly IClientState clientState;
     private readonly IPlayerState playerState;
@@ -26,6 +27,8 @@ public sealed class ItemCollectionScanner
     private readonly Dictionary<ItemCollectionCategory, bool> storageWasVisible = new();
     private readonly Dictionary<ItemCollectionCategory, DateTimeOffset> lastStorageOpenScanUtc = new();
     private readonly Dictionary<uint, DateTimeOffset> inventoryTransferGraceUntil = new();
+    private readonly Dictionary<ItemCollectionSource, string> pendingSourceScanSignatures = new();
+    private readonly Dictionary<ItemCollectionSource, DateTimeOffset> pendingSourceScanSinceUtc = new();
     private DateTimeOffset nextAutoScanUtc;
 
     public ItemCollectionScanner(Configuration configuration, IClientState clientState, IPlayerState playerState, IDataManager dataManager, IGameGui gameGui, IPluginLog log, ItemSetRepository itemSetRepository)
@@ -119,8 +122,13 @@ public sealed class ItemCollectionScanner
 
     private unsafe bool ScanInventory(InventoryManager* manager, CharacterCollectionSnapshot snapshot, DateTimeOffset scanStartedUtc)
     {
+        if (!AreContainersLoaded(manager, InventoryTypes.Inventory))
+        {
+            return false;
+        }
+
         var collectedItems = CollectContainerItems(manager, InventoryTypes.Inventory);
-        if (collectedItems.Count == 0)
+        if (!IsSourceScanStable(ItemCollectionSource.Inventory, collectedItems, scanStartedUtc))
         {
             return false;
         }
@@ -147,8 +155,13 @@ public sealed class ItemCollectionScanner
 
     private unsafe bool ScanContainerCategory(InventoryManager* manager, CharacterCollectionSnapshot snapshot, ItemCollectionCategory category, ItemCollectionSource source, IReadOnlyList<InventoryType> inventoryTypes, DateTimeOffset scanStartedUtc)
     {
+        if (!AreContainersLoaded(manager, inventoryTypes))
+        {
+            return false;
+        }
+
         var collectedItems = CollectContainerItems(manager, inventoryTypes);
-        if (collectedItems.Count == 0)
+        if (!IsSourceScanStable(source, collectedItems, scanStartedUtc))
         {
             return false;
         }
@@ -156,6 +169,44 @@ public sealed class ItemCollectionScanner
         RemoveSources(snapshot, source);
         AddCollectedItems(snapshot, collectedItems, source);
         MarkCategoryScanned(snapshot, category, scanStartedUtc);
+        return true;
+    }
+
+    private bool IsSourceScanStable(ItemCollectionSource source, IReadOnlyDictionary<uint, int> collectedItems, DateTimeOffset scanStartedUtc)
+    {
+        var signature = BuildSourceScanSignature(collectedItems);
+        if (!pendingSourceScanSignatures.TryGetValue(source, out var previousSignature) || previousSignature != signature)
+        {
+            pendingSourceScanSignatures[source] = signature;
+            pendingSourceScanSinceUtc[source] = scanStartedUtc;
+            log.Debug($"[AkuItemSets] Source scan changed for {source}; waiting for stable scan before committing.");
+            return false;
+        }
+
+        if (!pendingSourceScanSinceUtc.TryGetValue(source, out var firstSeenUtc) || scanStartedUtc - firstSeenUtc < SourceScanStabilityDelay)
+        {
+            return false;
+        }
+
+        pendingSourceScanSignatures.Remove(source);
+        pendingSourceScanSinceUtc.Remove(source);
+        return true;
+    }
+
+    private static string BuildSourceScanSignature(IReadOnlyDictionary<uint, int> collectedItems)
+        => string.Join("|", collectedItems.OrderBy(entry => entry.Key).Select(entry => $"{entry.Key}:{entry.Value}"));
+
+    private static unsafe bool AreContainersLoaded(InventoryManager* manager, IReadOnlyList<InventoryType> inventoryTypes)
+    {
+        foreach (var inventoryType in inventoryTypes)
+        {
+            var container = manager->GetInventoryContainer(inventoryType);
+            if (container == null || !container->IsLoaded)
+            {
+                return false;
+            }
+        }
+
         return true;
     }
 
@@ -189,8 +240,13 @@ public sealed class ItemCollectionScanner
 
     private unsafe bool ScanRetainers(InventoryManager* manager, CharacterCollectionSnapshot snapshot, DateTimeOffset scanStartedUtc)
     {
+        if (!AreContainersLoaded(manager, InventoryTypes.Retainer))
+        {
+            return false;
+        }
+
         var collectedItems = CollectContainerItems(manager, InventoryTypes.Retainer);
-        if (collectedItems.Count == 0)
+        if (!IsSourceScanStable(ItemCollectionSource.Retainer, collectedItems, scanStartedUtc))
         {
             return false;
         }
@@ -280,14 +336,35 @@ public sealed class ItemCollectionScanner
                 return false;
             }
 
+            var unlockBits = itemFinderModule->CabinetItemUnlockBits;
+            var unlockBitsLength = unlockBits.Length;
+            if (unlockBitsLength <= 0)
+            {
+                log.Debug("[AkuItemSets] Armoire scan skipped: CabinetItemUnlockBits is empty.");
+                return false;
+            }
+
             var collectedItems = new Dictionary<uint, int>();
             foreach (var cabinetRow in dataManager.GetExcelSheet<CabinetSheet>())
             {
-                if (cabinetRow.Item.RowId != 0 && itemFinderModule->CabinetItemUnlockBits[(int)cabinetRow.RowId] != 0)
+                if (cabinetRow.Item.RowId == 0)
                 {
-                    collectedItems.TryGetValue(cabinetRow.Item.RowId, out var existing);
-                    collectedItems[cabinetRow.Item.RowId] = existing + 1;
+                    continue;
                 }
+
+                var cabinetIndex = (int)cabinetRow.RowId;
+                if (cabinetIndex < 0 || cabinetIndex >= unlockBitsLength)
+                {
+                    continue;
+                }
+
+                if (unlockBits[cabinetIndex] == 0)
+                {
+                    continue;
+                }
+
+                collectedItems.TryGetValue(cabinetRow.Item.RowId, out var existing);
+                collectedItems[cabinetRow.Item.RowId] = existing + 1;
             }
 
             if (collectedItems.Count == 0)
@@ -302,7 +379,7 @@ public sealed class ItemCollectionScanner
         }
         catch (Exception ex)
         {
-            log.Warning(ex, "Could not scan armoire. Open the armoire once in game if it is not cached.");
+            log.Debug(ex, "Could not scan armoire. Open the armoire once in game if it is not cached.");
             return false;
         }
     }

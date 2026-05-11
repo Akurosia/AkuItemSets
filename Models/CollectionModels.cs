@@ -87,7 +87,11 @@ public sealed record ItemSetDefinition(
     uint SetItemId,
     string SetName,
     uint IconId,
-    IReadOnlyList<ItemSetPiece> Pieces);
+    IReadOnlyList<ItemSetPiece> Pieces,
+    string? LootSourceName = null,
+    string? LootSourceUrl = null,
+    IReadOnlyList<string>? LootSourceAliases = null,
+    IReadOnlyList<uint>? LootSourceTerritoryTypeIds = null);
 
 public sealed record ItemSetPiece(
     ItemSetSlot Slot,

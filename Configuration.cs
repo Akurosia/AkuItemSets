@@ -16,6 +16,7 @@ public sealed class Configuration : IPluginConfiguration
     public bool HideCompletedSets { get; set; }
     public bool ShowOnlyMissingPieces { get; set; }
     public bool IncludeAllClassItemsInRoleFilters { get; set; }
+    public bool ShowOnlyCurrentInstanceLoot { get; set; }
 
     public void Save() => Plugin.PluginInterface.SavePluginConfig(this);
 }

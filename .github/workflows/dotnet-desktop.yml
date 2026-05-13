@@ -49,6 +49,13 @@ jobs:
             version="$(grep -oPm1 '(?<=<Version>)[^<]+' AkuItemSets.csproj)"
           fi
 
+          if [[ "$version" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)(\.[0-9]+)?$ ]]; then
+            version="${BASH_REMATCH[1]}.${BASH_REMATCH[2]}.${BASH_REMATCH[3]}"
+          else
+            echo "Version must be in 0.0.0 or 0.0.0.0 format: $version" >&2
+            exit 1
+          fi
+
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "Resolved version: $version"
 
@@ -76,6 +83,26 @@ jobs:
 
           mkdir -p artifacts
           cp "$package_path" artifacts/latest.zip
+
+          temp_dir="$(mktemp -d)"
+          unzip -q artifacts/latest.zip -d "$temp_dir"
+          manifest_path="$(find "$temp_dir" -name 'AkuItemSets.json' -type f | head -n 1)"
+          if [[ -z "${manifest_path}" ]]; then
+            echo "Could not find AkuItemSets.json inside latest.zip"
+            find "$temp_dir" -type f -print
+            exit 1
+          fi
+
+          jq --arg version "${{ steps.version.outputs.version }}" \
+            '.AssemblyVersion = $version |
+             if has("TestingAssemblyVersion") then .TestingAssemblyVersion = $version else . end' \
+            "$manifest_path" > "$manifest_path.tmp"
+          mv "$manifest_path.tmp" "$manifest_path"
+
+          rm artifacts/latest.zip
+          (cd "$temp_dir" && zip -qr "$GITHUB_WORKSPACE/artifacts/latest.zip" .)
+          rm -rf "$temp_dir"
+
           sha512sum artifacts/latest.zip > artifacts/checksums.sha512
           unzip -l artifacts/latest.zip
 

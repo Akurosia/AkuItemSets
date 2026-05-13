@@ -15,6 +15,7 @@ public sealed class ItemCollectionScanner
     private const uint HqFlag = 1_000_000;
     private static readonly TimeSpan AutoScanInterval = TimeSpan.FromMinutes(2);
     private static readonly TimeSpan StorageOpenScanInterval = TimeSpan.FromSeconds(1);
+    private static readonly TimeSpan InventoryChangePollInterval = TimeSpan.FromMilliseconds(250);
     private static readonly TimeSpan InventoryToDresserTransferGrace = TimeSpan.FromMinutes(2);
     private static readonly TimeSpan SourceScanStabilityDelay = TimeSpan.FromMilliseconds(750);
     private readonly Configuration configuration;
@@ -29,7 +30,9 @@ public sealed class ItemCollectionScanner
     private readonly Dictionary<uint, DateTimeOffset> inventoryTransferGraceUntil = new();
     private readonly Dictionary<ItemCollectionSource, string> pendingSourceScanSignatures = new();
     private readonly Dictionary<ItemCollectionSource, DateTimeOffset> pendingSourceScanSinceUtc = new();
+    private readonly Dictionary<ItemCollectionSource, string> observedSourceScanSignatures = new();
     private DateTimeOffset nextAutoScanUtc;
+    private DateTimeOffset nextInventoryChangePollUtc;
 
     public ItemCollectionScanner(Configuration configuration, IClientState clientState, IPlayerState playerState, IDataManager dataManager, IGameGui gameGui, IPluginLog log, ItemSetRepository itemSetRepository)
     {
@@ -61,6 +64,7 @@ public sealed class ItemCollectionScanner
         }
 
         ScanOpenedStorages();
+        ScanChangedInventorySources();
 
         if (DateTimeOffset.UtcNow >= nextAutoScanUtc)
         {
@@ -545,6 +549,62 @@ public sealed class ItemCollectionScanner
         {
             ScanCurrentCharacter();
         }
+    }
+
+    private unsafe void ScanChangedInventorySources()
+    {
+        var now = DateTimeOffset.UtcNow;
+        if (now < nextInventoryChangePollUtc)
+        {
+            return;
+        }
+
+        nextInventoryChangePollUtc = now + InventoryChangePollInterval;
+
+        var inventoryManager = InventoryManager.Instance();
+        if (inventoryManager == null)
+        {
+            return;
+        }
+
+        var shouldScan = HasPendingContainerScan()
+            | HasContainerSignatureChanged(inventoryManager, ItemCollectionSource.Inventory, InventoryTypes.Inventory)
+            | HasContainerSignatureChanged(inventoryManager, ItemCollectionSource.Armoury, InventoryTypes.Armoury)
+            | HasContainerSignatureChanged(inventoryManager, ItemCollectionSource.Saddlebag, InventoryTypes.Saddlebag);
+
+        if (shouldScan)
+        {
+            ScanCurrentCharacter();
+        }
+    }
+
+    private bool HasPendingContainerScan()
+        => pendingSourceScanSignatures.ContainsKey(ItemCollectionSource.Inventory)
+            || pendingSourceScanSignatures.ContainsKey(ItemCollectionSource.Armoury)
+            || pendingSourceScanSignatures.ContainsKey(ItemCollectionSource.Saddlebag);
+
+    private unsafe bool HasContainerSignatureChanged(InventoryManager* manager, ItemCollectionSource source, IReadOnlyList<InventoryType> inventoryTypes)
+    {
+        if (!AreContainersLoaded(manager, inventoryTypes))
+        {
+            return false;
+        }
+
+        var signature = BuildSourceScanSignature(CollectContainerItems(manager, inventoryTypes));
+        if (!observedSourceScanSignatures.TryGetValue(source, out var previousSignature))
+        {
+            observedSourceScanSignatures[source] = signature;
+            return false;
+        }
+
+        if (previousSignature == signature)
+        {
+            return false;
+        }
+
+        observedSourceScanSignatures[source] = signature;
+        log.Debug($"[AkuItemSets] Detected live {source} container change; refreshing collection snapshot.");
+        return true;
     }
 
     private bool IsAddonVisible(string addonName)

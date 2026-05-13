@@ -1570,16 +1570,23 @@ public sealed class MainWindow : Window
         };
     }
 
-    private static bool MatchesSearch(ItemSetDefinition set, string searchText)
+    private bool MatchesSearch(ItemSetDefinition set, string searchText)
     {
         if (string.IsNullOrWhiteSpace(searchText))
         {
             return true;
         }
 
+        var sourceDisplayText = GetLootSourceDisplayText(set);
+        var fallbackSource = GetFallbackOutfitSource(set.SetItemId);
+
         return set.SetName.Contains(searchText, StringComparison.CurrentCultureIgnoreCase)
+            || (!string.IsNullOrWhiteSpace(sourceDisplayText) && sourceDisplayText.Contains(searchText, StringComparison.CurrentCultureIgnoreCase))
             || (!string.IsNullOrWhiteSpace(set.LootSourceName) && set.LootSourceName.Contains(searchText, StringComparison.CurrentCultureIgnoreCase))
             || (set.LootSourceAliases?.Any(alias => alias.Contains(searchText, StringComparison.CurrentCultureIgnoreCase)) == true)
+            || (!string.IsNullOrWhiteSpace(fallbackSource?.SourceName) && fallbackSource.SourceName.Contains(searchText, StringComparison.CurrentCultureIgnoreCase))
+            || GetLocalizedLootSourceNames(set).Any(name => name.Contains(searchText, StringComparison.CurrentCultureIgnoreCase))
+            || (fallbackSource?.TerritoryTypeIds.Any(id => GetTerritoryNames(id).Any(name => name.Contains(searchText, StringComparison.CurrentCultureIgnoreCase))) == true)
             || set.Pieces.Any(piece => piece.Name.Contains(searchText, StringComparison.CurrentCultureIgnoreCase));
     }
 

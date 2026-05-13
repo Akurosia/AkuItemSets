@@ -335,16 +335,16 @@ public sealed class ItemCollectionScanner
     {
         try
         {
-            if (!TryGetItemFinderModule(out var itemFinderModule))
+            var uiState = FFXIVClientStructs.FFXIV.Client.Game.UI.UIState.Instance();
+            if (uiState == null)
             {
                 return false;
             }
 
-            var unlockBits = itemFinderModule->CabinetItemUnlockBits;
-            var unlockBitsLength = unlockBits.Length;
-            if (unlockBitsLength <= 0)
+            var cabinet = &uiState->Cabinet;
+            if (!cabinet->IsCabinetLoaded())
             {
-                log.Debug("[AkuItemSets] Armoire scan skipped: CabinetItemUnlockBits is empty.");
+                log.Debug("[AkuItemSets] Armoire scan skipped: cabinet data is not cached yet.");
                 return false;
             }
 
@@ -356,24 +356,13 @@ public sealed class ItemCollectionScanner
                     continue;
                 }
 
-                var cabinetIndex = (int)cabinetRow.RowId;
-                if (cabinetIndex < 0 || cabinetIndex >= unlockBitsLength)
-                {
-                    continue;
-                }
-
-                if (unlockBits[cabinetIndex] == 0)
+                if (!cabinet->IsItemInCabinet(cabinetRow.RowId))
                 {
                     continue;
                 }
 
                 collectedItems.TryGetValue(cabinetRow.Item.RowId, out var existing);
                 collectedItems[cabinetRow.Item.RowId] = existing + 1;
-            }
-
-            if (collectedItems.Count == 0)
-            {
-                return false;
             }
 
             RemoveSources(snapshot, ItemCollectionSource.Armoire);
